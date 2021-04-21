@@ -17,6 +17,18 @@
 #include "ntimage.h"
 #include "bootparams.h"
 
+
+char *memset(void *dest,uint8_t value,uint64_t count) {
+	uint8_t *start = dest;
+	uint8_t *d = (uint8_t*) dest;
+	while (count--) {
+		*d++ = value;
+	}
+	return start;
+
+}
+#pragma function(memset)
+
 #define PSF1_MAGIC0 0x36
 #define PSF1_MAGIC1 0x04
 
@@ -263,6 +275,32 @@ void IdentityMapMemory(EFI_MEMORY_DESCRIPTOR* MemMap,uint64_t mMapSize,uint64_t 
 	// we need to tidy up and call ExitBootServices first.
 }
 
+void MmMapAllPhysicalMemory(EFI_MEMORY_DESCRIPTOR* MemMap,uint64_t mMapSize,uint64_t mMapDescrSize) {
+	const uint64_t baseAddress = 0xFFFF800024000000;
+	uint64_t mMapEntryCount = mMapSize / mMapDescrSize;
+	
+	for (int i = 0; i < mMapEntryCount; i++) {
+		EFI_MEMORY_DESCRIPTOR* desc = (EFI_MEMORY_DESCRIPTOR*)((uint64_t)MemMap + (i * mMapDescrSize));
+		for (uint64_t j = 0; j < desc->NumberOfPages; j++) {
+			uint64_t a = ((uint64_t)desc->PhysicalStart) + ( j * 4096);
+			MapMem(a, (void*)(a + baseAddress));
+		}
+	}
+}
+
+void *MmAllocateAndMapPages(void *basevirt,uint64_t numberOfPages) {
+	uint64_t pageVirtBase = (uint64_t) basevirt;
+
+	for (uint64_t i = 0;i < numberOfPages;i++) {
+		void *phys_p = MmAllocPhysicalPage();
+		uint64_t phys = (uint64_t) phys_p; 
+		MapMem(phys,(void*)pageVirtBase);
+		pageVirtBase += 4096;
+	}
+
+	return basevirt;
+}
+
 /* Ram Disk. 
    14/04/2021 We are going to need this to kick off user mode drivers 
               so I might as well do this now.
@@ -344,7 +382,7 @@ void RamDiskAddFile(EFI_SYSTEM_TABLE* SysTable,EFI_HANDLE ImageHandle, CHAR16 *f
 void RamDiskReadFile(CHAR16 *filename,uint64_t size,void *buffer) {
 	/* find the file */
 	RAMDISK_FILE* current = BootTimeRamDisk;
-	Print(L"Reading file %s from ramdisk \n",filename);
+	//Print(L"Reading file %s from ramdisk \n",filename);
 	while (current->next != NULL) {
 		if (StrCmp (current->filename,filename) == 0) {
 			break; 
@@ -368,7 +406,7 @@ void RamDiskReadFile(CHAR16 *filename,uint64_t size,void *buffer) {
 void RamDiskSetFilePos(CHAR16 *filename,uint64_t position) {
 	/* find the file */
 	RAMDISK_FILE* current = BootTimeRamDisk;
-	Print(L"Setting file position to %u\n",position);
+	//Print(L"Setting file position to %u\n",position);
 	while (current->next != NULL) {
 		if (StrCmp (current->filename,filename) == 0) {
 			break; 
@@ -516,17 +554,11 @@ EFI_STATUS EFIAPI UefiMain (
 	kParams.mMap = NULL;
 	kParams.mMapSize = 0;
 	kParams.mMapDescSize = 0;
-  EFI_STATUS status = 0;
-  status = SystemTable->BootServices->GetMemoryMap(&kParams.mMapSize,kParams.mMap,&mapKey,&kParams.mMapDescSize,&DescriptorVersion);
-  Print(L"GetMemoryMap Status = %d\n");
-  Print(L"Memory Map Size = %d\n",kParams.mMapSize);
-  Print(L"Memory Descriptor size = %d\n",kParams.mMapDescSize);
-  kParams.mMapSize += 4096; // allocate an additional page. According to the spec the memory allocation to hold the map may increase the size of the map.
-	status = SystemTable->BootServices->AllocatePool(EfiLoaderData,kParams.mMapSize,(void**)&kParams.mMap);
-	Print(L"AllocatePool status = %d\n");
-	Print(L"AllocatePool pointer = %x\n",kParams.mMap);
-	status = SystemTable->BootServices->GetMemoryMap(&kParams.mMapSize,kParams.mMap,&mapKey,&kParams.mMapDescSize,&DescriptorVersion);
-    Print(L"GetMemoryMap status = %d\n",status);
+  
+    SystemTable->BootServices->GetMemoryMap(&kParams.mMapSize,kParams.mMap,&mapKey,&kParams.mMapDescSize,&DescriptorVersion);
+    kParams.mMapSize += 4096; // allocate an additional page. According to the spec the memory allocation to hold the map may increase the size of the map.
+	SystemTable->BootServices->AllocatePool(EfiLoaderData,kParams.mMapSize,(void**)&kParams.mMap);
+	SystemTable->BootServices->GetMemoryMap(&kParams.mMapSize,kParams.mMap,&mapKey,&kParams.mMapDescSize,&DescriptorVersion);
   /* Dump the memory descriptors to check for problems. */
 	Print(L"Memory Descriptor List:\n");
 	uint64_t memoryDescriptorCount = kParams.mMapSize / kParams.mMapDescSize;
@@ -540,8 +572,39 @@ EFI_STATUS EFIAPI UefiMain (
   /********************************************
    *  Exit Boot Services After this line.     *
    * ******************************************/
-  //SystemTable->BootServices->ExitBootServices(ImageHandle,mapKey);
+//   EFI_STATUS status = 
+SystemTable->BootServices->ExitBootServices(ImageHandle,mapKey);
+//    if (status != 0) {
+// 	   PrintSerial("Failed to exit boot services\r\n");
+//  	  return EFI_SUCCESS;
+//    }
+  /**************************************************
+   * UEFI BOOT SERVICES UNAVAILABLE AFTER THIS LINE *
+   **************************************************/
 
+   /* -=ToDos=- 
+   1. Initalize Memory Manager.
+	2. Identity Map all memory descriptors.
+	3. Map all physical memory in the higher half 
+	   starting at 0xFFFF800024000000 (this leaves a 512Mb hole for 
+	   the kernel to be mapped into + 64Mb for kernel stack space.)
+	4. Call SetVirtualAddressMap. 
+	5. Map the kernel image starting at 0xFFFF800000000000
+  */
+
+   InitMmFromEfi((EFI_MEMORY_DESCRIPTOR*) kParams.mMap,kParams.mMapSize,kParams.mMapDescSize);
+   IdentityMapMemory((EFI_MEMORY_DESCRIPTOR*)kParams.mMap,kParams.mMapSize,kParams.mMapDescSize);
+   MmMapAllPhysicalMemory((EFI_MEMORY_DESCRIPTOR*)kParams.mMap,kParams.mMapSize,kParams.mMapDescSize);
+   uint64_t newCr3 = ((uint64_t)KernelPML4 & 0xFFFFFF000);
+   PrintSerial("Updating CR3... ");
+   __writecr3(newCr3);
+   PrintSerial("Done.\r\n");
+
+   /*******************************************************
+	* KERNEL VIRTUAL ADDRESS MAP APPLIES BEYOND THIS LINE.*
+	*******************************************************/
+
+   
   UINTN size = sizeof(dosHeader);
 	RamDiskReadFile(L"UK.EXE", sizeof(dosHeader), &dosHeader);
   RamDiskSetFilePos(L"UK.EXE",dosHeader.e_lfanew);
@@ -551,49 +614,66 @@ EFI_STATUS EFIAPI UefiMain (
 	//Kernel->Read(Kernel,&size,&NtImageHeaders);
 
   if (NtImageHeaders.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
-      Print(L"UK.EXE format is bad\n");
+      PrintSerial("UK.EXE format is bad\n");
       return 0;
   }
 
   if (NtImageHeaders.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) {
-        Print(L"Error UK.EXE must be compiled for x64\n");
+        PrintSerial("Error UK.EXE must be compiled for x64\n");
+		return 0;
   }
 
-  Print(L"%d sections\n",NtImageHeaders.FileHeader.NumberOfSections);
+//   Print(L"%d sections\n",NtImageHeaders.FileHeader.NumberOfSections);
 
-  IMAGE_SECTION_HEADER* p_ImageSectionHeaders;
+  // we can't use AllocatePool anymore and i'm too lazy to write 
+  // a throwaway heap just for booting, so allocate it on
+  // the stack with a sensible limit instead.
+  IMAGE_SECTION_HEADER ImageSectionHeaders[16]; 
+  
+  
+  if (NtImageHeaders.FileHeader.NumberOfSections > 16) {
+	  PrintSerial("Kernel Image has too many sections\r\n");
+	  return EFI_SUCCESS;
+  }
+
+  if (NtImageHeaders.OptionalHeader.ImageBase < 0xFFFF800000000000) {
+	  PrintSerial("Kernel is linked at wrong base address\r\n");
+	  PrintSerial("Must link at 0xFFFF800000000000\r\n");
+	  return EFI_SUCCESS;
+  }
+
   size = sizeof(IMAGE_SECTION_HEADER) * NtImageHeaders.FileHeader.NumberOfSections;
-  SystemTable->BootServices->AllocatePool(EfiLoaderData,sizeof(IMAGE_SECTION_HEADER) * NtImageHeaders.FileHeader.NumberOfSections, (void*)&p_ImageSectionHeaders);
+  //SystemTable->BootServices->AllocatePool(EfiLoaderData,sizeof(IMAGE_SECTION_HEADER) * NtImageHeaders.FileHeader.NumberOfSections, (void*)&p_ImageSectionHeaders);
 
-	RamDiskReadFile(L"UK.EXE",size,p_ImageSectionHeaders);
+	RamDiskReadFile(L"UK.EXE",size,&ImageSectionHeaders);
     //Kernel->Read(Kernel,&size,p_ImageSectionHeaders);
 
 	// dump the sections to the screen for debugging.
     // this will crash if a section name is 8 characters or more.
-    for (int i = 0; i < NtImageHeaders.FileHeader.NumberOfSections;i++) {
-        Print(L"Section %a at 0x%x\n",p_ImageSectionHeaders[i].Name,p_ImageSectionHeaders[i].VirtualAddress + NtImageHeaders.OptionalHeader.ImageBase);
-    }
+    // for (int i = 0; i < NtImageHeaders.FileHeader.NumberOfSections;i++) {
+    //     Print(L"Section %a at 0x%x\n",ImageSectionHeaders[i].Name,ImageSectionHeaders[i].VirtualAddress + NtImageHeaders.OptionalHeader.ImageBase);
+    // }
     //void *pSectionData;
 	                         
 
     for (int i = 0; i < NtImageHeaders.FileHeader.NumberOfSections;i++) {
-        int pages = (p_ImageSectionHeaders[i].Misc.VirtualSize + 0x1000 - 1) / 0x1000;
-        void* pSectionAddress = (void*) (NtImageHeaders.OptionalHeader.ImageBase + p_ImageSectionHeaders[i].VirtualAddress);
-        SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData, pages, pSectionAddress);
-        RamDiskSetFilePos(L"UK.EXE",p_ImageSectionHeaders[i].PointerToRawData);
+        int pages = (ImageSectionHeaders[i].Misc.VirtualSize + 0x1000 - 1) / 0x1000;
+        void* pSectionAddress = (void*) (NtImageHeaders.OptionalHeader.ImageBase + ImageSectionHeaders[i].VirtualAddress);
+        //SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData, pages, pSectionAddress);
+		/* We can't allocate a contiguous region of physical memory with our simple memory management 
+		   so instead we just take what ever pages are free and use the MMU to make it virtually contigous. */
+		pSectionAddress = MmAllocateAndMapPages(pSectionAddress,pages);
+        RamDiskSetFilePos(L"UK.EXE",ImageSectionHeaders[i].PointerToRawData);
 		//Kernel->SetPosition(Kernel,p_ImageSectionHeaders[i].PointerToRawData);
-		size =  p_ImageSectionHeaders[i].SizeOfRawData;
+		size =  ImageSectionHeaders[i].SizeOfRawData;
 		RamDiskReadFile(L"UK.EXE",size,pSectionAddress);
         //Kernel->Read(Kernel,&size,pSectionAddress);
     }
     uint64_t KernelStartAddress = NtImageHeaders.OptionalHeader.ImageBase + NtImageHeaders.OptionalHeader.AddressOfEntryPoint;
-    Print(L"Kernel Loaded Successfully\n");
+    PrintSerial("Kernel Loaded Successfully\n");
     int (*Kernel_Main)(KERNEL_PARAMETER_BLOCK *kParams) =  (int (*)(KERNEL_PARAMETER_BLOCK *kParams)) KernelStartAddress;
-
-
-
    
-  Kernel_Main(&kParams);
+   Kernel_Main(&kParams);
 
 
   return EFI_SUCCESS;
