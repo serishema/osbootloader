@@ -673,6 +673,14 @@ SystemTable->BootServices->ExitBootServices(ImageHandle,mapKey);
     PrintSerial("Kernel Loaded Successfully\n");
     int (*Kernel_Main)(KERNEL_PARAMETER_BLOCK *kParams) =  (int (*)(KERNEL_PARAMETER_BLOCK *kParams)) KernelStartAddress;
    
+   /* Before entering the kernel we need to map some pages for the kernel stack in the higher half
+      and then have the kernel switch to that stack pointer.
+	  
+	  We allocate 4Mb for an inital stack. This is probably way too much, but gives us 
+	  some space to play with (a stack per thread?, etc).
+    */
+   void *stackbase = (void*) (0xFFFF800024000000 - 0x400000);
+   stackbase = MmAllocateAndMapPages(stackbase,4096);
    Kernel_Main(&kParams);
 
 
