@@ -25,4 +25,6 @@ typedef struct {
 	void* mMap;
 	uint64_t mMapSize;
 	uint64_t mMapDescSize;
+	void *StartOfKernelHeap;
+	uint64_t InitalHeapSize;
 } KERNEL_PARAMETER_BLOCK;

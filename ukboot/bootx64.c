@@ -673,6 +673,15 @@ SystemTable->BootServices->ExitBootServices(ImageHandle,mapKey);
     PrintSerial("Kernel Loaded Successfully\n");
     int (*Kernel_Main)(KERNEL_PARAMETER_BLOCK *kParams) =  (int (*)(KERNEL_PARAMETER_BLOCK *kParams)) KernelStartAddress;
    
+   /* Set up memory space for a kernel heap.
+      This is effectively a non-paged pool.
+   */
+
+   void *heapbase = (void*) (NtImageHeaders.OptionalHeader.ImageBase + NtImageHeaders.OptionalHeader.SizeOfImage);
+   heapbase = MmAllocateAndMapPages(heapbase,16384); // We allocate 64Mb for a kernel heap.
+   kParams.StartOfKernelHeap = heapbase;
+   kParams.InitalHeapSize = 16384 * 4096;
+
    /* Before entering the kernel we need to map some pages for the kernel stack in the higher half
       and then have the kernel switch to that stack pointer.
 	  
@@ -681,6 +690,7 @@ SystemTable->BootServices->ExitBootServices(ImageHandle,mapKey);
     */
    void *stackbase = (void*) (0xFFFF800024000000 - 0x400000);
    stackbase = MmAllocateAndMapPages(stackbase,4096);
+
    Kernel_Main(&kParams);
 
 
